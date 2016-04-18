@@ -5,7 +5,7 @@
     :license: Simplified BSD License, see LICENSE.txt for more details."""
 
 from passlib.context import CryptContext
-from flask import Blueprint, current_app, url_for
+from flask import Blueprint, current_app, flash, url_for
 from flask_login import LoginManager, UserMixin as LoginUserMixin, make_secure_token
 from flask_user.db_adapters import DBAdapter
 from .db_adapters import SQLAlchemyAdapter
@@ -17,7 +17,7 @@ from . import tokens
 from . import translations
 from . import views
 from . import signals
-from .translations import get_translations
+from .translations import get_translations, gettext
 
 # Enable the following: from flask.ext.user import current_user
 from flask_login import current_user
@@ -272,6 +272,29 @@ class UserManager(object):
                     new_hash = self.hash_password(password)
                     self.update_password(user, new_hash)
         return verified
+
+    def get_failed_login_warnings(self, user):
+        """Returns a list of warnings to show to a user after a failed login attempt."""
+        return []
+
+    def can_user_login(self, user):
+        """Returns True if and only if the user should be allowed to login. If not, the browser
+        will be redirected to the login page with any flash messages that were added."""
+
+        # Check if user account has been disabled
+        if not _call_or_get(user.is_active):
+            flash(gettext('Your account has not been enabled.'), 'error')
+            return False
+
+        # Check if user has a confirmed email address
+        if self.enable_email and self.enable_confirm_email \
+                and not self.enable_login_without_confirm_email \
+                and not user.has_confirmed_email():
+            url = url_for('user.resend_confirm_email')
+            flash(gettext('Your email address has not yet been confirmed. Check your email Inbox and Spam folders for the confirmation email or <a href="%(url)s">Re-send confirmation email</a>.', url=url), 'error')
+            return False
+
+        return True
 
     def generate_token(self, user_id):
         return self.token_manager.generate_token(user_id)

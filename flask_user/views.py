@@ -199,6 +199,11 @@ def forgot_password():
         user, user_email = user_manager.find_user_by_email(email)
 
         if user:
+            lockout_message = user_manager.get_lockout_message(user)
+            if lockout_message:
+                flash(lockout_message, 'error')
+                return redirect(_endpoint_url(user_manager.login_endpoint))
+
             user_manager.send_reset_password_email(email)
 
         # Prepare one-time system message
@@ -226,35 +231,24 @@ def login():
     # Initialize form
     login_form = user_manager.login_form(request.form)          # for login.html
     register_form = user_manager.register_form()                # for login_or_register.html
-    if request.method!='POST':
+    if request.method != 'POST':
         login_form.next.data     = register_form.next.data = next
         login_form.reg_next.data = register_form.reg_next.data = reg_next
 
-    # Process valid POST
-    if request.method=='POST' and login_form.validate():
-        # Retrieve User
-        user = None
-        user_email = None
-        if user_manager.enable_username:
-            # Find user record by username
-            user = user_manager.find_user_by_username(login_form.username.data)
-            user_email = None
-            # Find primary user_email record
-            if user and db_adapter.UserEmailClass:
-                user_email = db_adapter.find_first_object(db_adapter.UserEmailClass,
-                        user_id=int(user.get_id()),
-                        is_primary=True,
-                        )
-            # Find user record by email (with form.username)
-            if not user and user_manager.enable_email:
-                user, user_email = user_manager.find_user_by_email(login_form.username.data)
-        else:
-            # Find user by email (with form.email)
-            user, user_email = user_manager.find_user_by_email(login_form.email.data)
+    user = _find_user(user_manager, db_adapter, login_form.username.data, login_form.email.data)
 
-        if user:
+    # Process valid POST
+    if request.method == 'POST':
+        lockout_message = user_manager.get_lockout_message(user) if user else None
+
+        if lockout_message:
+            flash(lockout_message, 'error')
+        elif login_form.validate():
             # Log user in
             return _do_login_user(user, login_form.next.data, login_form.remember_me.data)
+        elif user:
+            for warning in user_manager.get_failed_login_warnings(user):
+                flash(warning, 'error')
 
     # Process GET or invalid POST
     return render_template(user_manager.login_template,
@@ -575,6 +569,11 @@ def reset_password(token):
         flash(_('Your reset password token is invalid.'), 'error')
         return redirect(_endpoint_url(user_manager.login_endpoint))
 
+    lockout_message = user_manager.get_lockout_message(user)
+    if lockout_message:
+        flash(lockout_message, 'error')
+        return redirect(_endpoint_url(user_manager.login_endpoint))
+
     # Mark email as confirmed
     user_email = emails.get_primary_user_email(user)
     user_email.confirmed_at = datetime.utcnow()
@@ -700,18 +699,7 @@ def _do_login_user(user, next, remember_me=False):
     # User must have been authenticated
     if not user: return unauthenticated()
 
-    # Check if user account has been disabled
-    if not _call_or_get(user.is_active):
-        flash(_('Your account has not been enabled.'), 'error')
-        return redirect(url_for('user.login'))
-
-    # Check if user has a confirmed email address
-    user_manager = current_app.user_manager
-    if user_manager.enable_email and user_manager.enable_confirm_email \
-            and not current_app.user_manager.enable_login_without_confirm_email \
-            and not user.has_confirmed_email():
-        url = url_for('user.resend_confirm_email')
-        flash(_('Your email address has not yet been confirmed. Check your email Inbox and Spam folders for the confirmation email or <a href="%(url)s">Re-send confirmation email</a>.', url=url), 'error')
+    if not current_app.user_manager.can_user_login(user):
         return redirect(url_for('user.login'))
 
     # Use Flask-Login to sign in user
@@ -728,10 +716,32 @@ def _do_login_user(user, next, remember_me=False):
     return redirect(next)
 
 
+def _find_user(user_manager, db_adapter, username=None, email=None):
+    user = None
+
+    if user_manager.enable_username and username:
+        # Find user record by username
+        user = user_manager.find_user_by_username(username)
+        user_email = None
+        # Find primary user_email record
+        if user and db_adapter.UserEmailClass:
+            user_email = db_adapter.find_first_object(
+                db_adapter.UserEmailClass,
+                user_id=int(user.get_id()),
+                is_primary=True,
+            )
+        # Find user record by email (with form.username)
+        if not user and user_manager.enable_email:
+            user, user_email = user_manager.find_user_by_email(username)
+    elif email:
+        # Find user by email (with form.email)
+        user, user_email = user_manager.find_user_by_email(email)
+
+    return user
+
+
 def _endpoint_url(endpoint):
     url = '/'
     if endpoint:
         url = url_for(endpoint)
     return url
-
-
